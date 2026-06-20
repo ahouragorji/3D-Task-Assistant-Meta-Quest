@@ -17,6 +17,9 @@ TagManager:
   - QDSUITextSecondaryColor
   - QDSUIDestructiveButton
   - QDSUISecondaryButton
+  - QDSUITooltip
+  - QDSUIToggleButton
+  - PlayerHand
   layers:
   - Default
   - TransparentFX

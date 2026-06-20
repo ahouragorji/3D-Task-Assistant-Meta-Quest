@@ -28,6 +28,9 @@ public class QuestPassthroughSender : MonoBehaviour
     
     [SerializeField] OVRCameraRig rig;
 
+   
+
+
     [Header("Command Input Field")]
     [SerializeField] TMP_InputField commandInputField;
 
@@ -48,7 +51,6 @@ public class QuestPassthroughSender : MonoBehaviour
     private bool _dataChannelReady = false;
     private bool _capturing = false;
     private bool _triggerWasDown = false;
-
     // ROOT CAUSE FIX: CHUNK_SIZE was 16000, which is right at (or over, once you
     // add the "IMG|<timestamp>|<index>|<total>|" prefix) the safe usable max
     // message size most WebRTC/SCTP data channel implementations support
@@ -110,11 +112,12 @@ public class QuestPassthroughSender : MonoBehaviour
         // Use Button.One for the 'A' button, or Button.PrimaryHandTrigger for the Grip.
         // Button.Start is the Left Menu button.
         bool triggerJustPressed = OVRInput.GetDown(OVRInput.Button.One); 
-        
+
         bool isChannelOpen = _dataChannel != null && _dataChannel.ReadyState == RTCDataChannelState.Open;
 
         if (triggerJustPressed && isChannelOpen && !_capturing)
         {
+
             Debug.Log($"[Quest] Trigger pressed. Starting capture.");
             StartCoroutine(CaptureImages());
         }
@@ -243,6 +246,7 @@ public class QuestPassthroughSender : MonoBehaviour
         yield return new WaitForSeconds(0.5f);
         _msgQueue.Clear();
         Debug.Log($"[Quest] Reconnecting to: {signalingUrl}");
+
         ConnectSignaling();
     }
 
