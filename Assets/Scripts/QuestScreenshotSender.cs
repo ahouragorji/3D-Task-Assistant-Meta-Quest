@@ -39,6 +39,9 @@ public class QuestPassthroughSender : MonoBehaviour
     [Range(0.1f, 1.0f)]
     public float triggerThreshold = 0.7f;
 
+    [Header("Capture State")]
+    public Vector3 lastCaptureHeadPosition; // <-- ADD THIS
+    
     private WebSocket _ws;
     private RTCPeerConnection _pc;
     private RTCDataChannel _dataChannel;
@@ -257,6 +260,11 @@ private IEnumerator CaptureImages()
     float depth_fx = 0, depth_fy = 0, depth_cx = 0, depth_cy = 0;
     float depthNearZ = 0.1f, depthFarZ = 20.0f;
 
+    if (Camera.main != null)
+    {
+        lastCaptureHeadPosition = Camera.main.transform.position;
+    }
+    
     Vector3 depthPos = Vector3.zero;
     Quaternion depthRot = Quaternion.identity;
     Texture depthTex = Shader.GetGlobalTexture("_PreprocessedEnvironmentDepthTexture");

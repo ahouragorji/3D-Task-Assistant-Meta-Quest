@@ -1747,7 +1747,7 @@
     "m_Hidden": false,
     "m_ShaderOutputName": "_Environment_Depth_Bias",
     "m_StageCapability": 3,
-    "m_Value": 1.809999942779541,
+    "m_Value": 2.059999942779541,
     "m_DefaultValue": 0.0,
     "m_Labels": []
 }

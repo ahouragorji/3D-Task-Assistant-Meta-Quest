@@ -3498,6 +3498,7 @@ MonoBehaviour:
   commandInputField: {fileID: 1472636876}
   depthToFloatMaterial: {fileID: 2100000, guid: dc794ba0f954c2a47a61435bd89cc9c2, type: 2}
   triggerThreshold: 0.7
+  lastCaptureHeadPosition: {x: 0, y: 0, z: 0}
 --- !u!4 &1407192892
 Transform:
   m_ObjectHideFlags: 0
@@ -3526,13 +3527,19 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   sender: {fileID: 1407192891}
-  ballPrefab: {fileID: 6761913659538435932, guid: 9eb0c510f62082540875ba8950e06d82, type: 3}
-  ballScale: 0.02
+  arrowUpPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowDownPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowFrontPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowBackPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowLeftPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowRightPrefab: {fileID: 3920376007214498179, guid: 84731934fa1111f4892c16be5cfd1218, type: 3}
+  arrowOffset: 0
+  arrowScale: 1
   nextButton: {fileID: 609721004}
   previousButton: {fileID: 1902740271}
   instructionText: {fileID: 274303675}
   stepCounterText: {fileID: 1456978209}
-  showDebugBoundingBoxes: 1
+  showDebugBoundingBoxes: 0
   debugToggleButton: {fileID: 0}
   drawMaterial: {fileID: 0}
 --- !u!114 &1407192894
