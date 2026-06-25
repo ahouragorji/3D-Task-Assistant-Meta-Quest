@@ -51,6 +51,7 @@ public class QuestPassthroughSender : MonoBehaviour
     private bool _dataChannelReady = false;
     private bool _capturing = false;
     private bool _triggerWasDown = false;
+    private string preCommand = "";
     // ROOT CAUSE FIX: CHUNK_SIZE was 16000, which is right at (or over, once you
     // add the "IMG|<timestamp>|<index>|<total>|" prefix) the safe usable max
     // message size most WebRTC/SCTP data channel implementations support
@@ -79,6 +80,7 @@ public class QuestPassthroughSender : MonoBehaviour
         StartCoroutine(WebRTC.Update());
         ConnectSignaling();
     }
+
 
     private async void ConnectSignaling()
     {
@@ -117,7 +119,9 @@ public class QuestPassthroughSender : MonoBehaviour
 
         if (triggerJustPressed && isChannelOpen && !_capturing)
         {
+            preCommand = commandInputField.text;
 
+            commandInputField.text = "Capturing environment...";
             Debug.Log($"[Quest] Trigger pressed. Starting capture.");
             StartCoroutine(CaptureImages());
         }
@@ -128,14 +132,19 @@ public class QuestPassthroughSender : MonoBehaviour
         }
         else if (triggerJustPressed && _capturing)
         {
+            commandInputField.text = "Already asked something, please wait...";
             Debug.LogWarning("[Quest] Trigger ignored. A capture is already in progress (_capturing=true).");
         }
     }
 
     // -------------------------------------------------------------------------
     // Signaling
-    // -------------------------------------------------------------------------
+    // --------------- ----------------------------------------------------------
 
+    public string passpreCommand()
+    {
+        return preCommand;
+    }
     private void HandleSignalingMessage(string raw)
     {
         if (raw.StartsWith("DC|"))
@@ -442,6 +451,7 @@ private IEnumerator CaptureImages()
         imageDepth = depthBase64
     };
 
+    commandInputField.text = "Asking Alpha, please wait ...";
     string json = JsonUtility.ToJson(package);
     byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(json);
     string base64 = Convert.ToBase64String(utf8);

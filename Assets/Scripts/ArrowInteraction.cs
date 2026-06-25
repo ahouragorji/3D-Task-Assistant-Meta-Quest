@@ -8,6 +8,10 @@ public class ArrowInteraction : MonoBehaviour
     public string handTag = "PlayerHand";
     public string handLayer = "VR_Hands";
 
+    [Header("NextStep")]
+    public QuestInstructionReceiver questInstructionReceiver;
+
+
     [Header("Visual Effects")]
     public ParticleSystem destructionParticles;
 
@@ -27,9 +31,12 @@ public class ArrowInteraction : MonoBehaviour
     // 2. THIS LISTENS TO THE INTERACTION SDK (Pinching / Gripping)
     public void Disintegrate()
     {
+
+        
         if (_isDestroying) return;
         _isDestroying = true;
 
+        questInstructionReceiver.AdvanceToNextStep();
         // Turn off the collider so it can't be touched twice
         GetComponent<Collider>().enabled = false;
 

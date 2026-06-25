@@ -1,7 +1,39 @@
 """
-app.py — unchanged except that each placement now carries an "orientation"
-field (e.g. "up", "front") forwarded from the vision pipeline so the Quest
-knows which arrow prefab to spawn and in which direction to offset it.
+app.py
+
+Receives a capture (RGB image + depth map + metadata + user command) from the
+Quest, runs the vision pipeline, reprojects detections to world space, and
+returns a JSON payload that QuestInstructionReceiver.cs can deserialize directly.
+
+Output schema (matches AROverlay / InstructionResponse in QuestInstructionReceiver.cs):
+{
+  "id": str,
+  "ar_overlays": [
+    {
+      "step":            int,
+      "instruction":     str,
+      "guidance_tool":   str,          # e.g. "indicator_arrow" — empty for text-only steps
+      "manipulation_tag": str,         # YOLOE label — empty for text-only / floating
+      "tool_settings": [               # FeatureParameter[] in C#
+        { "key": str, "value": str },
+        ...
+      ],
+      "worldX": float,
+      "worldY": float,
+      "worldZ": float,
+      "bboxCorners": [                 # 8 x Corner3D; empty list for text-only steps
+        { "x": float, "y": float, "z": float },
+        ...
+      ]
+    },
+    ...
+  ]
+}
+
+tool_settings is serialized as a flat key/value array rather than a nested
+object because Unity's JsonUtility cannot deserialize arbitrary nested JSON —
+it only handles fixed, known types. FeatureParameter[] (key + value strings) is
+the simplest structure that round-trips cleanly through JsonUtility.
 """
 
 import json
@@ -16,43 +48,16 @@ from mask_reprojection import resolve_mask_world_point
 
 app = Flask(__name__)
 
-DEBUG_MASKS = os.environ.get("DEBUG_MASKS", "0") == "1"
+#DEBUG_MASKS = os.environ.get("DEBUG_MASKS", "0") == "1"
+DEBUG_MASKS = "1"
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _load_metadata(meta_path: str) -> dict:
     with open(meta_path, "r") as f:
         return json.load(f)
-
-
-def save_debug_masks(rgb_path, step_results, capture_id):
-    img = cv2.imread(rgb_path)
-    if img is None:
-        print(f"[debug] Could not load RGB image at {rgb_path} for debugging.")
-        return
-
-    overlay = img.copy()
-    for step in step_results:
-        for det in step["detections"]:
-            mask  = det["mask"]
-            color = np.random.randint(100, 255, (3,), dtype=np.uint8).tolist()
-            overlay[mask] = color
-
-    alpha = 0.5
-    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
-
-    for step in step_results:
-        for det in step["detections"]:
-            label = f"Step {step['step_number']}: {det['label']} [{det.get('orientation','?')}]"
-            bbox  = det["bbox"]
-            x1, y1, x2, y2 = map(int, bbox)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(img, label, (x1, max(y1 - 10, 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-    dir_name  = os.path.dirname(rgb_path)
-    save_path = os.path.join(dir_name, f"DebugMasks_{capture_id}.jpg")
-    cv2.imwrite(save_path, img)
-    print(f"[debug] Saved visual mask verification to: {save_path}")
 
 
 def _load_depth_map(depth_path: str, meta: dict) -> np.ndarray:
@@ -60,7 +65,7 @@ def _load_depth_map(depth_path: str, meta: dict) -> np.ndarray:
     height = meta.get("depthHeight", 0)
 
     if width <= 0 or height <= 0:
-        raise ValueError("Missing depth dimensions.")
+        raise ValueError("Missing depth dimensions in metadata.")
 
     raw         = np.fromfile(depth_path, dtype=np.float32).reshape(height, width)
     clean_depth = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
@@ -74,16 +79,81 @@ def _load_depth_map(depth_path: str, meta: dict) -> np.ndarray:
         print("[server] WARNING: depthFarZ not in metadata, using fallback 20.0")
 
     if np.isinf(far) or far > 10000.0:
-        linear_depth = np.where(clean_depth > 0.0001, near / clean_depth, 0.0)
-    else:
-        linear_depth = np.where(
-            clean_depth > 0.0001,
-            (near * far) / (near + clean_depth * (far - near)),
-            0.0
-        )
+        return np.where(clean_depth > 0.0001, near / clean_depth, 0.0)
 
-    return linear_depth
+    return np.where(
+        clean_depth > 0.0001,
+        (near * far) / (near + clean_depth * (far - near)),
+        0.0,
+    )
 
+
+def _settings_dict_to_kv(settings: dict) -> list[dict]:
+    """
+    Converts a flat settings dict {"placement_rule": "up", ...} into the
+    FeatureParameter[] shape that Unity's JsonUtility expects:
+    [{"key": "placement_rule", "value": "up"}, ...]
+
+    All values are coerced to str — each IToolParser on the C# side is
+    responsible for parsing its own values (e.g. int.Parse for duration).
+    """
+    return [{"key": k, "value": str(v)} for k, v in settings.items()]
+
+
+def _text_only_overlay(step_number: int, instruction: str) -> dict:
+    """
+    Emits a bare overlay that carries only the instruction text for a step.
+    The Quest receiver checks for an empty guidance_tool / manipulation_tag and
+    skips spawning — it still uses the instruction for the UI panel.
+    """
+    return {
+        "step":             step_number,
+        "instruction":      instruction,
+        "guidance_tool":    "",
+        "manipulation_tag": "",
+        "tool_settings":    [],
+        "worldX":           0.0,
+        "worldY":           0.0,
+        "worldZ":           0.0,
+        "bboxCorners":      [],
+    }
+
+
+def save_debug_masks(rgb_path: str, step_results: list, capture_id: str) -> None:
+    img = cv2.imread(rgb_path)
+    if img is None:
+        print(f"[debug] Could not load image at {rgb_path}")
+        return
+
+    canvas = img.copy()
+    for step in step_results:
+        for det in step["detections"]:
+            if det.get("mask") is None:
+                continue
+            color = np.random.randint(100, 255, (3,), dtype=np.uint8).tolist()
+            canvas[det["mask"]] = color
+
+    cv2.addWeighted(canvas, 0.5, img, 0.5, 0, img)
+
+    for step in step_results:
+        for det in step["detections"]:
+            if not det.get("bbox"):
+                continue
+            x1, y1, x2, y2 = map(int, det["bbox"])
+            tool   = det.get("guidance_tool", "?")
+            label  = det.get("label", "?")
+            caption = f"Step {step['step_number']}: {label} [{tool}]"
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(img, caption, (x1, max(y1 - 10, 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    save_path = os.path.join(os.path.dirname(rgb_path), f"DebugMasks_{capture_id}.jpg")
+    cv2.imwrite(save_path, img)
+    print(f"[debug] Debug masks saved to: {save_path}")
+
+# ---------------------------------------------------------------------------
+# Route
+# ---------------------------------------------------------------------------
 
 @app.route("/process", methods=["POST"])
 def process():
@@ -93,7 +163,7 @@ def process():
     missing = [f for f in required_fields if f not in body or not body[f]]
     if missing:
         return jsonify({"error": f"Missing required fields: {missing}"}), 400
-
+    
     capture_id = body["id"]
     rgb_path   = body["rgbPath"]
     depth_path = body["depthPath"]
@@ -111,36 +181,55 @@ def process():
         return jsonify({"error": f"Failed to load depth map: {e}"}), 400
 
     try:
-        step_results = fetch_step_segmentations(command, rgb_path)
+        step_results = fetch_step_segmentations(command, rgb_path, detector="gdino_server",server_url="http://localhost:8000/predict")
         if DEBUG_MASKS:
             save_debug_masks(rgb_path, step_results, capture_id)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Vision pipeline failed: {e}"}), 500
 
-    placements = []
-    skipped    = 0
+    ar_overlays: list[dict] = []
+    skipped = 0
 
     for step in step_results:
         step_number = step["step_number"]
         instruction = step["instruction"]
 
         if not step["detections"]:
-            # No objects detected — emit a text-only placement so the Quest
-            # still displays the instruction for this step.
-            placements.append({
-                "step":        step_number,
-                "instruction": instruction,
-                "label":       "",
-                "orientation": "",
-                "worldX": 0.0, "worldY": 0.0, "worldZ": 0.0,
-                "bboxCorners": [],
-            })
+            # Step produced no detections — emit text-only so the Quest UI
+            # still shows the instruction and step counter advances correctly.
+            ar_overlays.append(_text_only_overlay(step_number, instruction))
             continue
+    
+        emitted_any = False
 
         for detection in step["detections"]:
+            guidance_tool = detection["guidance_tool"]
+            tool_settings = detection["tool_settings"]   # dict str→str from pipeline
+            label         = detection["label"]
+            mask          = detection.get("mask")
+            bbox          = detection.get("bbox", [])
+
+            # Floating overlay (no physical anchor — e.g. a countdown_timer
+            # that doesn't need a world point). Emit with zeroed world coords.
+            if not label or mask is None:
+                ar_overlays.append({
+                    "step":             step_number,
+                    "instruction":      instruction,
+                    "guidance_tool":    guidance_tool,
+                    "manipulation_tag": label,
+                    "tool_settings":    _settings_dict_to_kv(tool_settings),
+                    "worldX":           0.0,
+                    "worldY":           0.0,
+                    "worldZ":           0.0,
+                    "bboxCorners":      [],
+                })
+                emitted_any = True
+                continue
+
+            # Anchored overlay — needs reprojection to world space.
             world_point, bbox_corners = resolve_mask_world_point(
-                detection["mask"], depth_map, meta, detection["bbox"]
+                mask, depth_map, meta, bbox
             )
             if world_point is None:
                 skipped += 1
@@ -150,25 +239,33 @@ def process():
                 {"x": float(pt[0]), "y": float(pt[1]), "z": float(pt[2])}
                 for pt in bbox_corners
             ]
-            placements.append({
-                "step":        step_number,
-                "instruction": instruction,
-                "label":       detection["label"],
-                "orientation": detection.get("orientation", "up"), 
-                "worldX": float(world_point[0]),
-                "worldY": float(world_point[1]),
-                "worldZ": float(world_point[2]),
-                "bboxCorners": formatted_corners,
+
+            ar_overlays.append({
+                "step":             step_number,
+                "instruction":      instruction,
+                "guidance_tool":    guidance_tool,
+                "manipulation_tag": label,
+                "tool_settings":    _settings_dict_to_kv(tool_settings),
+                "worldX":           float(world_point[0]),
+                "worldY":           float(world_point[1]),
+                "worldZ":           float(world_point[2]),
+                "bboxCorners":      formatted_corners,
             })
+            emitted_any = True
 
-    print(f"[server] '{capture_id}': {len(placements)} placements resolved, "
-          f"{skipped} skipped (no valid depth).")
+        # If every detection in this step failed reprojection, still emit a
+        # text-only overlay so the step isn't silently swallowed.
+        if not emitted_any:
+            ar_overlays.append(_text_only_overlay(step_number, instruction))
 
-    return jsonify({"id": capture_id, "placements": placements})
+    print(f"[server] '{capture_id}': {len(ar_overlays)} overlays built, "
+          f"{skipped} detections skipped (no valid depth).")
+
+    return jsonify({"id": capture_id, "ar_overlays": ar_overlays})
 
 
 if __name__ == "__main__":
-    print("Starting detection + reprojection server on http://127.0.0.1:5000")
+    print("Starting AR guidance server on http://127.0.0.1:5000")
     print("Ensure OPENAI_API_KEY is set in your environment.")
-    print(f"Debug mask saving: {'ON' if DEBUG_MASKS else 'OFF'} (set DEBUG_MASKS=1 to enable)")
+    print(f"Debug masks: {'ON' if DEBUG_MASKS else 'OFF'} (set DEBUG_MASKS=1 to enable)")
     app.run(host="127.0.0.1", port=5000, debug=False)

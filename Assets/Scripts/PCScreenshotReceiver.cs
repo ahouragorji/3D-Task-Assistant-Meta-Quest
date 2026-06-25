@@ -95,9 +95,7 @@ public class PCScreenshotReceiver : MonoBehaviour
                 int received = 0;
                 foreach (var c in kvp.Value) if (c != null) received++;
                 Debug.LogError($"[PC] STALLED TRANSFER: capture '{id}' received {received}/{kvp.Value.Length} " +
-                                $"chunks and has been stuck for {Time.time - lastUpdate:F1}s. " +
-                                $"One or more chunks were likely dropped by the DataChannel. " +
-                                $"Discarding this incomplete capture.");
+                                $"chunks and has been stuck for {Time.time - lastUpdate:F1}s. Discarding.");
 
                 (stalledIds ??= new List<string>()).Add(id);
             }
@@ -255,7 +253,7 @@ public class PCScreenshotReceiver : MonoBehaviour
             string fullBase64 = string.Concat(_chunkBuffers[id]);
             _chunkBuffers.Remove(id);
             _chunkLastUpdateTime.Remove(id);
-            Debug.Log($"[PC] Capture '{id}' complete: all {total} chunks received ({fullBase64.Length} base64 chars). Saving...");
+            Debug.Log($"[PC] Capture '{id}' complete: all {total} chunks received. Saving...");
             SaveSnapshotToDisk(id, fullBase64);
         }
     }
@@ -269,7 +267,6 @@ public class PCScreenshotReceiver : MonoBehaviour
         SnapshotMeta metadata = null;
         string rgbPath = null, depthPath = null, metaPath = null;
 
-        // ── Step 1: Decode Envelope ──────────────────────────────────────────
         try
         {
             byte[] jsonBytes = Convert.FromBase64String(base64Envelope);
@@ -284,7 +281,6 @@ public class PCScreenshotReceiver : MonoBehaviour
 
         if (metadata == null) return;
 
-        // ── Step 2: Decode RGB ───────────────────────────────────────────────
         if (!string.IsNullOrEmpty(metadata.imageRGB))
         {
             try
@@ -294,13 +290,9 @@ public class PCScreenshotReceiver : MonoBehaviour
                 File.WriteAllBytes(rgbPath, imageBytes);
                 Debug.Log($"[PC] RGB saved: {rgbPath}");
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"[PC] RGB Decode failed for {id}. Error: {e.Message}");
-            }
+            catch (Exception e) { Debug.LogError($"[PC] RGB Decode failed for {id}. Error: {e.Message}"); }
         }
 
-        // ── Step 3: Decode Depth ─────────────────────────────────────────────
         if (!string.IsNullOrEmpty(metadata.imageDepth))
         {
             try
@@ -310,46 +302,29 @@ public class PCScreenshotReceiver : MonoBehaviour
                 File.WriteAllBytes(depthPath, depthBytes);
                 Debug.Log($"[PC] Depth saved: {depthPath}");
             }
-            catch (Exception e)
-            {
-                Debug.LogError($"[PC] Depth Decode failed for {id}. Error: {e.Message}");
-            }
+            catch (Exception e) { Debug.LogError($"[PC] Depth Decode failed for {id}. Error: {e.Message}"); }
         }
 
-        // ── Step 4: Read Voice Command ────────────────────────────────────────
-        // QuestPassthroughSender sends commandInputField.text as a plain string
-        // (not base64-encoded), so we use it directly rather than decoding it.
         if (!string.IsNullOrEmpty(metadata.command))
         {
             defaultCommand = metadata.command;
             Debug.Log($"[PC] Command updated to: '{defaultCommand}'");
         }
 
-        // ── Step 5: Save Metadata ────────────────────────────────────────────
         try
         {
             metadata.imageRGB   = "";
             metadata.imageDepth = "";
-
             metaPath = Path.Combine(saveFolder, $"Meta_{id}.json");
             File.WriteAllText(metaPath, JsonUtility.ToJson(metadata, true));
             Debug.Log($"[PC] Metadata saved: {metaPath}");
         }
-        catch (Exception e)
-        {
-            Debug.LogError($"[PC] Failed to save metadata JSON for {id}. Error: {e.Message}");
-        }
+        catch (Exception e) { Debug.LogError($"[PC] Failed to save metadata JSON for {id}. Error: {e.Message}"); }
 
-        // ── Step 6: Kick off vision pipeline ─────────────────────────────────
         if (rgbPath != null && depthPath != null && metaPath != null)
-        {
             StartCoroutine(RequestInstructionsFromServer(id, rgbPath, depthPath, metaPath, defaultCommand));
-        }
         else
-        {
-            Debug.LogWarning($"[PC] Skipping server request for '{id}': one or more files failed to save " +
-                              $"(rgb={rgbPath != null}, depth={depthPath != null}, meta={metaPath != null}).");
-        }
+            Debug.LogWarning($"[PC] Skipping server request for '{id}': one or more files failed to save.");
     }
 
     // -------------------------------------------------------------------------
@@ -366,9 +341,27 @@ public class PCScreenshotReceiver : MonoBehaviour
         public string command;
     }
 
-    // FIX: Added Corner3D and bboxCorners to InstructionPlacement so JsonUtility
-    // deserializes the corner data the server now returns. Without this field the
-    // corners were silently dropped and never relayed to the Quest.
+    // ── Serialization types that match app.py's output schema exactly ────────
+    //
+    // app.py returns:
+    //   { "id": str, "ar_overlays": [ AROverlay, ... ] }
+    //
+    // Each AROverlay has:
+    //   step, instruction, guidance_tool, manipulation_tag,
+    //   tool_settings ([{key, value},...]), worldX/Y/Z, bboxCorners ([{x,y,z},...])
+    //
+    // These must match QuestInstructionReceiver.AROverlay field-for-field so that
+    // the raw server JSON can be base64-encoded and relayed directly to the Quest
+    // without any transformation. JsonUtility requires the field names to match
+    // the JSON keys exactly (it is case-sensitive).
+
+    [Serializable]
+    private class FeatureParameter
+    {
+        public string key;
+        public string value;
+    }
+
     [Serializable]
     private class Corner3D
     {
@@ -376,21 +369,22 @@ public class PCScreenshotReceiver : MonoBehaviour
     }
 
     [Serializable]
-    private class InstructionPlacement
+    private class AROverlay
     {
-        public int       step;
-        public string    instruction;
-        public string    label;
-        public string    orientation;    // "up" | "down" | "front" | "back" | "left" | "right"
-        public float     worldX, worldY, worldZ;
-        public Corner3D[] bboxCorners;
+        public int             step;
+        public string          instruction;
+        public string          guidance_tool;
+        public string          manipulation_tag;
+        public FeatureParameter[] tool_settings;
+        public float           worldX, worldY, worldZ;
+        public Corner3D[]      bboxCorners;
     }
 
     [Serializable]
     private class InstructionResponse
     {
-        public string id;
-        public InstructionPlacement[] placements;
+        public string      id;
+        public AROverlay[] ar_overlays;
     }
 
     private IEnumerator RequestInstructionsFromServer(string id, string rgbPath, string depthPath,
@@ -404,13 +398,12 @@ public class PCScreenshotReceiver : MonoBehaviour
             metaPath  = FormatPathForServer(metaPath),
             command   = command
         };
-        string json = JsonUtility.ToJson(body);
 
-        Debug.Log($"[PC] Requesting instructions for '{id}' from server: {detectionServerUrl}");
+        Debug.Log($"[PC] Requesting instructions for '{id}' from: {detectionServerUrl}");
 
         using (var req = new UnityWebRequest(detectionServerUrl, "POST"))
         {
-            byte[] payload = Encoding.UTF8.GetBytes(json);
+            byte[] payload = Encoding.UTF8.GetBytes(JsonUtility.ToJson(body));
             req.uploadHandler   = new UploadHandlerRaw(payload);
             req.downloadHandler = new DownloadHandlerBuffer();
             req.SetRequestHeader("Content-Type", "application/json");
@@ -428,6 +421,9 @@ public class PCScreenshotReceiver : MonoBehaviour
             string responseJson = req.downloadHandler.text;
             Debug.Log($"[PC] Server responded for '{id}': {responseJson.Length} chars.");
 
+            // Validate the response parses correctly before relaying.
+            // We check ar_overlays (not the old 'placements') to confirm the
+            // server is running the updated app.py.
             InstructionResponse parsed = null;
             try
             {
@@ -439,13 +435,13 @@ public class PCScreenshotReceiver : MonoBehaviour
                 yield break;
             }
 
-            if (parsed == null || parsed.placements == null || parsed.placements.Length == 0)
+            if (parsed == null || parsed.ar_overlays == null || parsed.ar_overlays.Length == 0)
             {
-                Debug.LogWarning($"[PC] Server returned no placements for '{id}'. Nothing to relay.");
+                Debug.LogWarning($"[PC] Server returned no ar_overlays for '{id}'. Nothing to relay.");
                 yield break;
             }
 
-            Debug.Log($"[PC] Relaying {parsed.placements.Length} placements to Quest for '{id}'.");
+            Debug.Log($"[PC] Relaying {parsed.ar_overlays.Length} overlays to Quest for '{id}'.");
             RelayInstructionsToQuest(responseJson);
         }
     }
@@ -470,10 +466,7 @@ public class PCScreenshotReceiver : MonoBehaviour
             int    length = Mathf.Min(CHUNK_SIZE, base64.Length - start);
             string msg    = $"INSTR|{relayId}|{i}|{total}|{base64.Substring(start, length)}";
 
-            try
-            {
-                _remoteDataChannel.Send(msg);
-            }
+            try { _remoteDataChannel.Send(msg); }
             catch (Exception e)
             {
                 Debug.LogError($"[PC] Failed to relay instruction chunk {i}/{total}: {e.Message}");
@@ -481,7 +474,7 @@ public class PCScreenshotReceiver : MonoBehaviour
             }
         }
 
-        Debug.Log($"[PC] Instruction payload relayed to Quest ({total} chunks, {base64.Length} base64 chars).");
+        Debug.Log($"[PC] Relayed to Quest ({total} chunks, {base64.Length} base64 chars).");
     }
 
     private string FormatPathForServer(string windowsPath)
@@ -490,7 +483,6 @@ public class PCScreenshotReceiver : MonoBehaviour
         if (!serverIsOnWSL) return windowsPath;
 
         string path = windowsPath.Replace("\\", "/");
-
         if (path.Length >= 2 && path[1] == ':')
         {
             char driveLetter = char.ToLower(path[0]);
@@ -498,7 +490,6 @@ public class PCScreenshotReceiver : MonoBehaviour
             if (!remainder.StartsWith("/")) remainder = "/" + remainder;
             path = $"/mnt/{driveLetter}{remainder}";
         }
-
         return path;
     }
 

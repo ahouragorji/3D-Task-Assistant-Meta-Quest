@@ -1,0 +1,136 @@
+{
+  "tools": [
+    {
+      
+      "tool_name": "indicator_arrow",
+      "when_to_use": "Use for almost all steps where the user needs to find or interact with a specific object. This is the default tool.",
+      "when_not_to_use": "Do not use when the user needs to wait, move in a direction, or perform a precise hand gesture.",
+      "settings": [
+        {
+          "name": "placement_rule",
+          "type": "string",
+          "allowed_values": [
+            "up",
+            "down",
+            "front",
+            "back",
+            "left",
+            "right"
+          ],
+          "default": "front",
+          "description": "STRICT RULE: If the object is viewed entirely from the front (like a monitor, button, microwave face, cabinet door, or wall-mounted item), you MUST use 'front'. Use 'up' ONLY for objects resting on tables/floors where the top surface is clearly visible."
+        }
+      ]
+    
+      
+    },
+    {
+      "tool_name": "directional_arrow",
+      "enabled": false,
+      "when_to_use": "Use when the user must move, pull, push, slide, or rotate something in a specific direction. Example: 'slide the drawer outward', 'push the lever down'.",
+      "when_not_to_use": "Do not use to highlight a stationary object. Do not use for waiting steps.",
+      "settings": [
+        {
+          "name": "world_direction",
+          "type": "string",
+          "allowed_values": [
+            "forward",
+            "backward",
+            "left",
+            "right",
+            "up",
+            "down"
+          ],
+          "description": "The direction the arrow points in world space, relative to the user's forward vector at capture time."
+        },
+        {
+          "name": "placement_rule",
+          "type": "string",
+          "allowed_values": [
+            "up",
+            "front",
+            "left",
+            "right"
+          ],
+          "default": "up",
+          "description": "Which face of the detected object the arrow is anchored to before pointing outward."
+        }
+      ]
+    },
+   {
+      "tool_name": "ghost_hand",
+      "enabled": true,
+      "when_to_use": "Use when the step requires physical hand interaction. Choose 'poke' to press buttons, tap, or flip switches. Choose 'grab' ONLY to physically pick up, carry, or take hold of an object. Choose 'clean' ONLY when friction is applied to a surface, such as wiping, scrubbing, dusting, or sweeping. Never use 'clean' for picking items up.",
+      "when_not_to_use": "Do not use for simple navigation steps or directional movement with no hand action.",
+      "settings": [
+        {
+          "name": "gesture",
+          "type": "string",
+          "allowed_values": [
+            "poke",
+            "grab",
+            "clean"
+          ],
+          "description": "'poke' — fingertip forward, aimed at the object. 'grab' — open palm forward, aimed at the object. 'clean' — palm facing the user."
+        },
+        {
+          "name": "placement_rule",
+          "type": "string",
+          "allowed_values": [
+            "front",
+            "up"
+          ],
+          "default": "up",
+          "description": "STRICT RULES: If gesture is 'grab', this MUST be 'up'. If gesture is 'clean', this MUST be 'up'. If gesture is 'poke', this MUST be 'front'."
+        }
+      ]
+    },
+    {
+      "tool_name": "countdown_timer",
+      "enabled": false,
+      "when_to_use": "Use when the user must wait for a specific duration: cooking timers, drying times, charging waits, curing times.",
+      "when_not_to_use": "Do not use unless a specific duration is mentioned or strongly implied. Do not use for vague waits like 'let it cool' or 'wait until done'.",
+      "settings": [
+        {
+          "name": "duration_seconds",
+          "type": "integer",
+          "description": "Duration to count down in seconds. Convert minutes to seconds (e.g. 5 minutes = 300)."
+        },
+        {
+          "name": "placement_rule",
+          "type": "string",
+          "allowed_values": [
+            "up",
+            "front",
+            "floating"
+          ],
+          "default": "up",
+          "description": "Where to place the timer relative to the detected object. Use 'floating' only if no object was detected for this step."
+        }
+      ]
+    },
+    {
+      "tool_name": "label_pin",
+      "enabled": false,
+      "when_to_use": "Use for identification steps: 'this is the HDMI port', 'the red wire goes here'. Also use for query answers where you point to a specific object.",
+      "when_not_to_use": "Do not use when the user needs to perform an action \u2014 use indicator_arrow instead.",
+      "settings": [
+        {
+          "name": "text",
+          "type": "string",
+          "description": "The short label to display. Maximum 40 characters."
+        },
+        {
+          "name": "placement_rule",
+          "type": "string",
+          "allowed_values": [
+            "up",
+            "front"
+          ],
+          "default": "up",
+          "description": "Which face of the detected object the label pin appears on."
+        }
+      ]
+    }
+  ]
+}
