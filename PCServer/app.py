@@ -169,7 +169,10 @@ def process():
     depth_path = body["depthPath"]
     meta_path  = body["metaPath"]
     command    = body["command"]
+    use_yoloe  = body.get("useYoloe", False)          # default: gdino
+    intent     = body.get("intent", "").strip().lower()  # "task" | "query" | ""
 
+    detector = "yoloe" if use_yoloe else "gdino_server"
     try:
         meta = _load_metadata(meta_path)
     except Exception as e:
@@ -181,7 +184,7 @@ def process():
         return jsonify({"error": f"Failed to load depth map: {e}"}), 400
 
     try:
-        step_results = fetch_step_segmentations(command, rgb_path, detector="gdino_server",server_url="http://localhost:8000/predict")
+        step_results = fetch_step_segmentations(command, rgb_path, detector= detector,intent=intent,server_url="http://localhost:8000/predict")
         if DEBUG_MASKS:
             save_debug_masks(rgb_path, step_results, capture_id)
     except Exception as e:

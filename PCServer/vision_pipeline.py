@@ -136,18 +136,43 @@ class SemanticPlan(BaseModel):
     steps: List[SemanticStep] = Field(
         description=(
             "Chronological steps. Each step is one atomic action. "
-            "For tasks: include every step the user needs — don't skip obvious ones. "
-            "For queries: exactly ONE step whose instruction directly answers the question."
+            "For How to questions: include every step the user needs — don't skip obvious ones. "
+            "For a Detection request or Other types of Queries: exactly ONE step whose instruction directly answers the question."
         )
     )
 
+
+QUERY_SYSTEM_PROMPT = """You are an expert spatial assistant helping a user locate or identify objects in their real environment.
+You receive a photo of their space and their spoken request.
+
+Your ONLY job is to produce EXACTLY ONE step that directly answers their question by identifying the requested objects.
+
+OBJECT TAGGING RULES (Optimized for GroundingDINO Detection):
+  • Describe the object exactly as it appears in the image.
+  • Start with the category: "mug", "cable", "shoe".
+  • Add visual attributes: "dark blue mug", "red cable".
+  • Use ONE spatial anchor if needed: "the blue mug beside the laptop".
+  • NEVER include actions, verbs, pronouns, or full sentences in the tag.
+  • Groups are allowed: "the scattered shoes".
+
+USER VIEW RULES:
+  Determine how the camera is oriented relative to each object (the visual POV).
+  • flat on floor/table → "top"
+  • facing camera straight on → "front"
+  • seen from slight left → "front_left"
+  • ceiling fixture → "bottom"
+
+OUTPUT FORMAT:
+  Return exactly ONE step.
+  The 'intent' field MUST be "query".
+  Provide one TaggedObject for every physical item the user is asking about.
+"""
 
 PLANNER_SYSTEM_PROMPT = """You are an expert spatial assistant helping a user in their real environment.
 You receive a photo of their space and their spoken request.
 Your ONLY job is to write an excellent step-by-step action plan.
 
-DO NOT think about AR tools or overlays. Just plan.
-
+DO NOT think about AR tools or overlays. Just plan. Unless user has a Detection request. Then answer freely, detecting what user asked for, in one step. 
 PLANNING RULES (STRICTLY ENFORCED):
   • Be concise: Most tasks need 2–5 steps. Only generate steps strictly necessary to complete the goal.
   • No micro-steps: Combine fluid motions. "Pick up the mug" not "Reach for the mug" then "Grab it".
@@ -491,7 +516,7 @@ def _select_tool(action: str, user_view: str) -> dict:
             "tool_settings": {"gesture": gesture, "placement_rule": "front"},
         }
 
-        if gesture == "wipe":
+        if gesture == "clean":
                 return {
             "guidance_tool": "ghost_hand",
             "tool_settings": {"gesture": gesture, "placement_rule": "up"},
@@ -524,14 +549,21 @@ def _encode_image(image_path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def _fetch_step_plan(user_prompt: str, image_path: str) -> SemanticPlan:
+def _fetch_step_plan(user_prompt: str, image_path: str, pinned_intent: str = "") -> SemanticPlan:
     """Call 1: Planner sees the image. Returns SemanticPlan with tagged objects."""
     base64_image = _encode_image(image_path)
+
+    # 1. Select the appropriate system prompt based on the UI toggle
+    if pinned_intent == "query":
+        active_system_prompt = QUERY_SYSTEM_PROMPT
+    else:
+        # Default to the task planner if pinned_intent is "task" or empty
+        active_system_prompt = PLANNER_SYSTEM_PROMPT
 
     response = client.beta.chat.completions.parse(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+            {"role": "system", "content": active_system_prompt},
             {
                 "role": "user",
                 "content": [
@@ -550,8 +582,6 @@ def _fetch_step_plan(user_prompt: str, image_path: str) -> SemanticPlan:
         tags = [(o.tag, o.user_view) for o in s.objects]
         print(f"  Step {i}: {s.instruction} | objects: {tags}")
     return plan
-
-
 def _fetch_object_annotations(plan: SemanticPlan) -> ObjectAnnotationPlan:
     """
     Call 2: Annotator receives plan text only (no image).
@@ -651,6 +681,7 @@ def _match_dino_class(dino_class: str, unique_tags: list[str]) -> str | None:
 def fetch_step_segmentations(
     user_prompt: str,
     image_path: str,
+    intent: str = "", # <-- Added this parameter
     detector: Literal["yoloe", "gdino_server"] = "gdino_server",
     server_url: str = "http://localhost:8000/predict",
 ) -> list:
@@ -676,12 +707,20 @@ def fetch_step_segmentations(
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
 
-    # ── Call 1: Plan (image → steps + tagged objects with user_view) ──────────
-    plan = _fetch_step_plan(user_prompt, image_path)
+    # ── Resolve intent ────────────────────────────────────────────────────────
+# Caller can pin intent="task" or intent="query" to skip LLM classification.
+# If empty, fall back to the LLM planner's own intent field (old behaviour).
+    plan = _fetch_step_plan(user_prompt, image_path,pinned_intent=intent)
     if not plan.steps:
         return []
 
-    # ── Call 2: Annotate (text only → simple_noun + action per object) ────────
+    resolved_intent = intent if intent in ("task", "query") else plan.intent
+
+    # ── Query path: locate / identify, single step, no annotation needed ──────
+    if resolved_intent == "query":
+        return _run_query_path(plan, image_path, detector, server_url)
+
+    # ── Task path: full planner → annotator → tool selection → detection ──────
     annotation_plan = _fetch_object_annotations(plan)
 
     # Build lookup: step_number → list[ObjectAnnotation]
@@ -829,3 +868,116 @@ def fetch_step_segmentations(
         })
 
     return results_per_step
+
+
+def _run_query_path(
+    plan: SemanticPlan,
+    image_path: str,
+    detector: str,
+    server_url: str,
+) -> list:
+    """
+    Handles intent='query': locate / identify / count requests.
+    
+    Differences from the task path:
+      - No Annotator call (actions are irrelevant for queries)
+      - Tool is always 'indicator_arrow' (just highlight, no gesture)
+      - tool_settings are minimal: placement_rule only
+      - Detection still runs so the object gets a world anchor
+      - Returns a single step (the planner already constrains queries to 1 step)
+    """
+    results = []
+
+    for i, step in enumerate(plan.steps, 1):
+        unique_tags = [obj.tag for obj in step.objects if obj.tag]
+        print("user asked a query, not a big task. here is the query")
+
+        
+        detected_objects_map: dict[str, list] = {t: [] for t in unique_tags}
+
+        if unique_tags:
+            if detector == "gdino_server":
+                text_prompt = " . ".join(unique_tags)
+                try:
+                    with open(image_path, "rb") as f:
+                        resp = requests.post(
+                            server_url,
+                            files={"file": f},
+                            data={"text_prompt": text_prompt, "multimask_output": False},
+                        )
+                    if resp.status_code == 200:
+                        for ann in resp.json().get("annotations", []):
+                            matched = _match_dino_class(ann["class_name"].lower(), unique_tags)
+                            if not matched:
+                                continue
+                            rle = ann["segmentation_rle"]
+                            rle["counts"] = rle["counts"].encode("utf-8")
+                            mask = mask_util.decode(rle).astype(bool)
+                            detected_objects_map[matched].append({
+                                "bbox": ann["bbox"], "mask": mask
+                            })
+                    else:
+                        print(f"[vision_pipeline/query] GDINO error {resp.status_code}")
+                except requests.exceptions.RequestException as e:
+                    print(f"[vision_pipeline/query] GDINO unreachable: {e}")
+
+            elif detector == "yoloe":
+                yolo, sam = _get_models()
+                # For queries, use the full tag as the noun (no annotator to strip it)
+                try:
+                    yolo.set_classes(unique_tags, yolo.get_text_pe(unique_tags))
+                except AttributeError:
+                    yolo.set_classes(unique_tags)
+
+                yolo_results = yolo.predict(image_path, verbose=False)
+                all_bboxes, all_refs = [], []
+                for box in yolo_results[0].boxes:
+                    tag  = unique_tags[int(box.cls[0])]
+                    bbox = box.xyxy[0].tolist()
+                    all_bboxes.append(bbox)
+                    all_refs.append((tag, bbox))
+
+                if all_bboxes:
+                    sam_results = sam(image_path, bboxes=all_bboxes, verbose=False)
+                    masks = (
+                        sam_results[0].masks.data.cpu().numpy()
+                        if sam_results[0].masks is not None
+                        else [None] * len(all_bboxes)
+                    )
+                    for (tag, bbox), mask in zip(all_refs, masks):
+                        detected_objects_map[tag].append({
+                            "bbox": bbox,
+                            "mask": (mask > 0.5) if mask is not None else None,
+                        })
+
+        step_detections = []
+        for obj in step.objects:
+            tag   = obj.tag
+            # user_view from the planner (it saw the image)
+            view  = obj.user_view
+            # Queries always get a passive highlight — no gesture needed
+            tool_settings = {
+                "placement_rule": _VIEW_TO_PLACEMENT.get(view, "up"),
+            }
+
+            detected_items = detected_objects_map.get(tag, [])
+            if not detected_items:
+                print(f"[vision_pipeline/query] '{tag}' not detected.")
+                continue
+
+            for item in detected_items:
+                step_detections.append({
+                    "guidance_tool": "indicator_arrow",
+                    "tool_settings": tool_settings,
+                    "label":         tag,
+                    "bbox":          item["bbox"],
+                    "mask":          item["mask"],
+                })
+
+        results.append({
+            "step_number": i,
+            "instruction": step.instruction,
+            "detections":  step_detections,
+        })
+
+    return results
