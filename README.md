@@ -18,21 +18,22 @@ Most AR guidance systems run object detection in 2D and overlay flat bounding bo
 
 On the other hand, using a full 3D scene reconstruction before placing anything is too slow and too heavy for a comfortable interactive loop. 
 
-Insteadk we use a prebuilt functional object detection and image segmentation model, and reproject objects.
+Insteak we use a prebuilt functional object detection and image segmentation model, and reproject objects.
 
 Here is what happens, in details:
 
-1. The Quest takes a single RGB photo and also the depth frame from Environment Depth API.
+1. The Quest takes a single RGB photo and also the depth frame from Environment Depth API. 
 2. Both frames, along with the exact camera poses and intrinsics for both sensors at the moment of capture, are streamed over WebRTC to a PC.
 3. On the PC, GPT-4o-mini (using your own API key, it's needed btw) reads the image and your command, plans the steps, and names the objects to highlight.
-4. YOLOE detects those objects in the image. SAM 2 segments them precisely.
-5. For each segmented object, the system samples pixels across its mask and uses iterative reprojection to read the true metric depth at each pixel from the depth map.
-6. The mask's centroid is unprojected into 3D camera space and transformed into Unity world coordinates.
-7. The Quest receives a world-space anchor point, an 8-corner 3D bounding box, and a GPT-chosen orientation for each object.
-8. Animated overlays are spawned in the right place, based on your configuration.
+4. YOLOE detects those objects in the image. SAM 2 segments them precisely. You can also use Grounding Dino to do both simeltaneously.
+5. For each segmented object, the system samples pixels across its mask and uses iterative reprojection to read the true metric depth at each pixel from the depth map. 
+6. The mask's centroid is unprojected into 3D camera space and transformed into Unity world coordinates. Based on the view you have of each target object, and the rules you defined, the overlay is decided.
+7. Overlays and where they need to be spawned are decided quest-side with the parser you created (based on IParserTool class).
+8. Bounding boxes are also sent, for more accurate and customizable orientation.
+9. Animated overlays are spawned in the right place, for each step and disappear once you proceed to the next step.
 
 
-There are corrently 3 types in the project. You can add more by editing guidance_tool and file and adding corresponding parsers in your quest side unity project.
+There are corrently 3 types in the project, Hand gestures, arrows and an animated overlay that connects two objects. You can add more by editing guidance_tool and file and adding corresponding parsers in the project.
 
 <img width="800" height="450" alt="ezgif-6ed3a199200c4c09" src="https://github.com/user-attachments/assets/3940bda0-3b73-4153-be94-8bf0f7ee8f11" />
 
@@ -65,7 +66,7 @@ Then `camera_math.py`, which converts the Unity left-handed quaternion poses int
 - [Unity WebRTC](https://github.com/Unity-Technologies/com.unity.webrtc)
 - [NativeWebSocket](https://github.com/endel/NativeWebSocket)
 - Meta XR SDK (Passthrough Camera Access + Environment Depth Manager)
-- [Whisper Unity](https://github.com/Macoron/whisper.unity) (for on-device voice)
+- [Whisper Unity](https://github.com/Macoron/whisper.unity) (for on-device voice), the native meta TTS and Speech to text is also implemented.
 - TextMeshPro
 
 **PC**
@@ -77,16 +78,15 @@ Then `camera_math.py`, which converts the Unity left-handed quaternion poses int
 ```bash
 pip install flask openai ultralytics torch torchvision
 # SAM 2 — install from Meta's repo:
-pip install git+https://github.com/facebookresearch/segment-anything-2.git
+You should use https://github.com/facebookresearch/segment-anything-2.git. Follow instructions there and add the server file in PCserver of this repo to communicate.
+# Grounding_Sam2
+use https://github.com/IDEA-Research/Grounded-SAM-2 and add the grounding sam server script.
 ```
-
-**Model weights** — place in your working directory:
-- `yoloe-v8l-seg.pt` — from [Ultralytics YOLOE](https://github.com/ultralytics/ultralytics)
-- `sam2.1_s.pt` — from [Segment Anything 2](https://github.com/facebookresearch/segment-anything-2)
 
 **API key**
 Don't forget to add this to your environemental variables before running the PC server (AI server).
-
+You also need to add your custom api key to use meta's native TTS and Speech to text. Follow this video for more information:
+https://www.youtube.com/watch?v=61VAC6oQHTQ&t=1394s
 ```bash
 export OPENAI_API_KEY="sk-..."
 ```
@@ -98,7 +98,6 @@ export OPENAI_API_KEY="sk-..."
 ### 1. Signaling server
 
 ```bash
-cd signaling
 npm install ws
 node server.js
 # Listens on ws://0.0.0.0:3000
@@ -126,6 +125,7 @@ If your Python server runs inside WSL, set `serverIsOnWSL = true` on `PCScreensh
 - Open the Quest scene.
 - On `QuestPassthroughSender`, set `signalingUrl` to `ws://<YOUR_SERVER_LAN_IP>:3000`.
 - Assign `EnvironmentDepthManager`, `OVRCameraRig`, `PassthroughCameraAccess`, the `DepthToFloat` material, and the `commandInputField`.
+- Add the api keys for speech to text and text to speech to the building blocks.
 - Build and deploy to the Quest.
 
 ### 4. Unity (PC side)
@@ -138,6 +138,7 @@ If your Python server runs inside WSL, set `serverIsOnWSL = true` on `PCScreensh
 ### 5. Connect
 
 Start the signaling server → start Play mode on PC → put on the Quest. The two peers register automatically and the DataChannel opens within a few seconds. You'll see `[Quest] DataChannel OPEN` in the Quest's CanvasLogger.
+Don't forget to ensure both devices are accessible to each other. You may need to disable your firewall.
 
 To change the signaling address at runtime without rebuilding, use the `SignalingAddressChanger` UI panel.
 
@@ -154,8 +155,8 @@ Hold the **left index trigger** to record. Release to transcribe on-device via W
 **Navigating steps**  
 Use the **Next / Previous** buttons on the instruction panel to step through the plan. The arrow for each step appears in the correct location in your real environment; arrows for other steps are hidden.
 
-**Dismissing an arrow**  
-Pinch or poke any arrow to disintegrate it with a particle effect.
+**Dismissing an overlay**  
+Pinch or poke any arrow or hand gesture to disintegrate it with a particle effect. 
 
 **Debug bounding boxes**  
 Toggle the debug button to show the 3D bounding box wireframe around each detected object (rendered as cyan LineRenderers in Unity world space).
